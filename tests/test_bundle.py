@@ -111,6 +111,17 @@ class SeedCommandTest(TestCase):
         self.assertEqual(get_user_model().objects.filter(username__startswith="dummy_").count(), 0)
         self.assertEqual(StudentTier.objects.count(), 0)
 
+    def test_every_dummy_user_gets_a_profile(self):
+        """Without a UserProfile the Open edX login page fails with 'User has no profile'."""
+        from unittest import mock
+        fake = mock.Mock()
+        mods = {"common": mock.Mock(), "common.djangoapps": mock.Mock(), "common.djangoapps.student": mock.Mock(),
+                "common.djangoapps.student.models": mock.Mock(UserProfile=fake)}
+        with mock.patch.dict("sys.modules", mods):
+            self.run_seed(count=4)
+        self.assertEqual(fake.objects.get_or_create.call_count, 4)
+        self.assertEqual(fake.objects.get_or_create.call_args_list[0].kwargs["defaults"], {"name": "dummy_gate_01"})
+
     def test_unlisted_course_refused(self):
         from django.core.management.base import CommandError
         with self.assertRaises(CommandError):
@@ -123,8 +134,85 @@ class SeedCommandTest(TestCase):
         d = progress.progress_for(user, "course-v1:T+G+1")
         self.assertEqual(d["exam"], "gate_cse")
         self.assertIsNone(d["tier"])
-        self.assertEqual(progress.progress_for(user, "")["course_id"], "course-v1:T+G+1")  # latest course
+        self.assertIsNone(progress.progress_for(user, ""))  # always per course, never "latest"
+        self.assertEqual([c["course_id"] for c in progress.courses_for(user)], ["course-v1:T+G+1"])
         self.assertIsNone(progress.progress_for(user, "course-v1:X+Y+Z"))
+
+
+class ExplanationTest(TestCase):
+    def setUp(self):
+        sim = dummy.simulate("gate_cse", "slipping", 1, NOW)
+        self.f, self.ss = features.compute_features(now=NOW, **sim)
+        self.pred = model_adapter.CompositeBackend().predict(self.f)
+
+    def test_composite_breakdown_is_exact(self):
+        ref = sum(model_adapter._terms(dict({k: 0.0 for k in features.FEATURE_ORDER}, **model_adapter.BENCHMARK)).values())
+        self.assertAlmostEqual(sum(e["impact"] for e in self.pred.explanation), self.pred.score - ref, places=3)
+        impacts = [abs(e["impact"]) for e in self.pred.explanation]
+        self.assertEqual(impacts, sorted(impacts, reverse=True))
+
+    def prog(self, show, version="composite-v1", explanation=None, tier=None, score=None):
+        return progress.build_progress(exam="gate_cse", features=self.f, subject_scores=self.ss, show_tier=show,
+                                       tier=tier or self.pred.tier, score=self.pred.score if score is None else score,
+                                       model_version=version, explanation=explanation)
+
+    def test_hidden_unless_allowed(self):
+        d = self.prog(False)
+        self.assertNotIn("cpf", d)
+        self.assertNotIn("drivers", d)
+
+    def test_cpf_and_drivers_shown(self):
+        d = self.prog(True)
+        self.assertEqual(d["cpf"]["score"], round(100 * self.pred.score, 1))
+        self.assertEqual(d["cpf"]["kind"], "readiness")
+        self.assertTrue(d["drivers"]["helping"] and d["drivers"]["holding_back"])
+        self.assertTrue(all(x["points"] > 0 for x in d["drivers"]["helping"]))
+        self.assertTrue(all(x["points"] < 0 and x["text"] for x in d["drivers"]["holding_back"]))
+        self.assertEqual(d["cpf"]["next_level"]["name"], "Tier 1")
+
+    def test_trained_model_shap_is_passed_through(self):
+        shap = [{"feature": "S_weighted", "impact": -0.12}, {"feature": "recency_score", "impact": 0.05}]
+        d = self.prog(True, version="v7", explanation=shap, tier="Tier 2", score=0.55)
+        self.assertEqual(d["cpf"]["kind"], "model")
+        self.assertEqual(d["drivers"]["holding_back"][0]["points"], -12.0)
+        self.assertEqual(d["drivers"]["helping"][0]["label"], "Recent activity")
+        self.assertIsNone(d["cpf"]["next_level"])
+
+    def test_cap_note_for_low_scores(self):
+        f = {k: 0.0 for k in features.FEATURE_ORDER}
+        f.update(S_weighted=30.0, completion_rate=0.2, regularity_index=1.0, recency_score=1.0, longest_gap_days=0.0)
+        pred = model_adapter.CompositeBackend().predict(f)
+        d = progress.build_progress(exam="gate_cse", features=f, subject_scores={}, show_tier=True, tier=pred.tier,
+                                    score=pred.score, model_version=pred.version)
+        self.assertEqual(pred.tier, "Tier 3")
+        self.assertIn("below 40%", d["drivers"]["cap_note"])
+
+    @override_settings(TIER_MODEL_BACKEND="http", TIER_MODEL_URL="http://m/x")
+    def test_http_explanation_is_parsed_and_junk_ignored(self):
+        from unittest import mock
+        reply = {"tier": "Tier 2", "score": 0.5, "version": "v1",
+                 "explanation": [{"feature": "a", "impact": 0.01}, {"feature": "b", "impact": -0.2}, {"bad": 1}, {"feature": "c", "impact": "x"}]}
+        with mock.patch("requests.post", return_value=mock.Mock(json=lambda: reply, raise_for_status=lambda: None)):
+            pred = model_adapter.get_backend().predict(self.f)
+        self.assertEqual([e["feature"] for e in pred.explanation], ["b", "a"])
+
+
+class EnrollmentGateTest(TestCase):
+    def test_not_enrolled_gets_nothing(self):
+        from unittest import mock
+        enroll = mock.Mock()
+        enroll.is_enrolled.return_value = False
+        mods = {"common": mock.Mock(), "common.djangoapps": mock.Mock(), "common.djangoapps.student": mock.Mock(),
+                "common.djangoapps.student.models": mock.Mock(CourseEnrollment=enroll),
+                "opaque_keys": mock.Mock(), "opaque_keys.edx": mock.Mock(), "opaque_keys.edx.keys": mock.Mock()}
+        user = get_user_model().objects.create(username="x")
+        StudentTier.objects.create(user=user, course_id="course-v1:T+G+1", exam="gate_cse", tier="Tier 1",
+                                   features={k: 0.0 for k in features.FEATURE_ORDER}, subject_scores={})
+        with mock.patch.dict("sys.modules", mods):
+            self.assertIsNone(progress.progress_for(user, "course-v1:T+G+1"))
+            self.assertEqual(progress.courses_for(user), [])
+            enroll.is_enrolled.return_value = True
+            self.assertEqual(progress.progress_for(user, "course-v1:T+G+1")["exam"], "gate_cse")
 
 
 @override_settings(LOGIN_URL="/login/")
@@ -138,4 +226,4 @@ class PageTest(TestCase):
         req.user = get_user_model().objects.create(username="u")
         resp = pages.progress_page(req)
         self.assertEqual(resp.status_code, 200)
-        self.assertIn(b"/api/tier/v1/me/progress/", resp.content)
+        self.assertIn(b"/api/tier/v1/me/", resp.content)

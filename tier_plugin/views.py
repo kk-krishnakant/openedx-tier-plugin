@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import StudentTier
-from .progress import progress_for
+from .progress import courses_for, progress_for
 
 
 class MyTierView(APIView):
@@ -41,10 +41,23 @@ class MyProgressView(APIView):
     permission_classes = (IsAuthenticated,)
 
     def get(self, request):
-        data = progress_for(request.user, request.query_params.get("course_id", ""))
+        course_id = request.query_params.get("course_id", "")
+        if not course_id:
+            return Response({"detail": "course_id is required (progress is shown per course)."}, status=400)
+        data = progress_for(request.user, course_id)
         if data is None:
             return Response({"detail": "No progress yet."}, status=404)
         return Response(data)
+
+
+class MyCoursesView(APIView):
+    """GET /api/tier/v1/me/courses/  -> the learner's own enrolled courses that have progress."""
+
+    authentication_classes = (JwtAuthentication, SessionAuthentication)
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request):
+        return Response({"courses": courses_for(request.user)})
 
 
 class CourseTiersView(APIView):

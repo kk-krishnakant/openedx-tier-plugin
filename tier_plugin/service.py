@@ -25,6 +25,7 @@ def compute_and_save(user, course_key):
             "score": prediction.score,
             "features": features,
             "subject_scores": subject_scores,
+            "explanation": prediction.explanation or [],
             "model_version": prediction.version,
         },
     )

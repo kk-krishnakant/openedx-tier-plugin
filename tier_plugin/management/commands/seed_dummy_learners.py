@@ -52,6 +52,7 @@ class Command(BaseCommand):
         for i, persona in enumerate(dummy.persona_cycle(o["count"]), start=1):
             username = "%s%s_%02d" % (prefix, exam.split("_")[0], i)
             user, _ = User.objects.get_or_create(username=username, defaults={"email": username + "@example.invalid"})
+            self._ensure_profile(user)  # Open edX login fails with "User has no profile" without this
             if hasattr(user, "set_unusable_password"):
                 user.set_unusable_password()
                 user.save()
@@ -63,13 +64,22 @@ class Command(BaseCommand):
             StudentTier.objects.update_or_create(
                 user=user, course_id=course_id,
                 defaults=dict(exam=exam, tier=pred.tier, score=pred.score, features=f,
-                              subject_scores=subject_scores, model_version=pred.version))
+                              subject_scores=subject_scores, explanation=pred.explanation or [], model_version=pred.version))
             report.append((username, persona, pred.tier, pred.score))
         with open(o["report"], "w", newline="") as fh:
             w = csv.writer(fh)
             w.writerow(["username", "persona", "tier", "score"])
             w.writerows(report)
         self.stdout.write("Created %d dummy learners for %s (%s). Report: %s" % (len(report), course_id, exam, o["report"]))
+
+    @staticmethod
+    def _ensure_profile(user):
+        """Open edX needs a UserProfile for every user that logs in. Skipped outside Open edX (tests)."""
+        try:
+            from common.djangoapps.student.models import UserProfile
+        except ImportError:
+            return
+        UserProfile.objects.get_or_create(user=user, defaults={"name": user.username})
 
     def _write_full(self, user, course_id, persona, sim):
         """Best effort, for a live Open edX only: enrolment, subsection grades, problem state, persona note."""

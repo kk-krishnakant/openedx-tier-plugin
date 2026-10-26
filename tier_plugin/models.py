@@ -13,6 +13,8 @@ class StudentTier(models.Model):
     # The exact inputs the model saw, so every tier can be explained later.
     features = models.JSONField(default=dict)
     subject_scores = models.JSONField(default=dict)
+    # Per-feature impact on the score (SHAP values from your model, or the composite breakdown).
+    explanation = models.JSONField(default=list, blank=True)
     model_version = models.CharField(max_length=64, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
