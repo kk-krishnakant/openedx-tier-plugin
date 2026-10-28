@@ -1,7 +1,7 @@
-"""What a learner sees: progress summary and notifications, built from the stored StudentTier row.
+"""What a learner sees: progress summary and alerts, built from the stored StudentTier row.
 
 build_progress() is plain Python (easy to test). progress_for() reads the database.
-Notifications are rules over the stored inputs; nothing extra is stored. The tier itself is
+Alerts are rules over the stored inputs; nothing extra is stored. The tier itself is
 included only when TIER_SHOW_TO_LEARNERS is True.
 """
 import math
@@ -31,6 +31,8 @@ FEATURE_INFO = {
     "completion_rate": ("Quizzes completed", "Complete the remaining graded quizzes and mock tests.", "You have completed most graded quizzes."),
     "recency_score": ("Recent activity", "You have been away for a while. Do one short session today.", "You studied very recently."),
     "error_retry_ratio": ("Retrying mistakes", "When an answer is wrong, read the explanation and retry the problem.", "You retry problems after mistakes."),
+    "content_completion": ("Videos and reading", "Watch the remaining videos and read the notes, not only the quizzes.", "You are completing most videos and reading pages."),
+    "video_completion": ("Videos watched", "Finish the remaining video lectures of each subject.", "You are finishing most video lectures."),
     "slope_assessments": ("Score trend", "Your quiz scores are not improving yet. Review your mistakes before the next quiz.", "Your quiz scores are improving."),
     "active_day_ratio": ("Days studied", "Study on more days of the week.", "You study on many days."),
     "avg_attempts_per_problem": ("Attempts per problem", "Understand the solution before retrying again and again.", "Your attempts per problem look healthy."),
@@ -91,6 +93,8 @@ def build_progress(*, exam, features, subject_scores, updated_at=None, course_id
         "subjects_total": len(subjects),
         "quizzes_attempted_pct": round(100 * f.get("completion_rate", 0.0)),
         "active_weeks_pct": round(100 * f.get("regularity_index", 0.0)),
+        "content_pct": round(100 * f.get("content_completion", 0.0)),
+        "video_pct": round(100 * f.get("video_completion", 0.0)),
         "days_since_active": days_idle,
     }
 
@@ -113,6 +117,8 @@ def build_progress(*, exam, features, subject_scores, updated_at=None, course_id
             notes.append(_note("good", "Steady routine", "You studied in %d%% of recent weeks." % overall["active_weeks_pct"]))
         elif f.get("regularity_index", 0.0) < 0.5:
             notes.append(_note("info", "Study a little every week", "You were active in %d%% of recent weeks. Regular short sessions beat rare long ones." % overall["active_weeks_pct"]))
+        if f.get("content_completion", 0.0) < 0.3 and f.get("completion_rate", 0.0) >= 0.3:
+            notes.append(_note("info", "Do not skip the lectures", "You are taking quizzes but have completed only %d%% of the videos and reading pages." % overall["content_pct"]))
         strong = [r for r in attempted if r["status"] == "strong"]
         if strong:
             notes.append(_note("good", "Strong subjects", "Well done in: %s." % ", ".join(r["name"] for r in strong[:3])))
@@ -138,7 +144,10 @@ def build_progress(*, exam, features, subject_scores, updated_at=None, course_id
         "updated_at": updated_at.isoformat() if updated_at else None,
         "overall": overall,
         "subjects": rows,
-        "notifications": notes,
+        "alerts": notes,
+        "notifications": notes,  # old name, kept so panels imported into courses before v0.5 keep working
+        "content": {"content_pct": overall["content_pct"], "video_pct": overall["video_pct"]},
+        "consistency": {"active_weeks_pct": overall["active_weeks_pct"], "days_since_active": days_idle},
         "next_step": next_step,
         "tier": None,
     }

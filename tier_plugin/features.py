@@ -31,6 +31,8 @@ FEATURE_ORDER = [
     "avg_attempts_per_problem",
     "progression_speed",       # graded subsections attempted per week
     "recency_score",           # exp(-days since last activity / 14)
+    "content_completion",      # share of the course's videos and reading pages the learner completed
+    "video_completion",        # share of the course's videos completed
     "days_enrolled",
 ]
 
@@ -57,9 +59,10 @@ def _subject_for(name, subjects):
 
 
 def compute_features(*, now, enrolled_at, subsection_rows, activity_days, problem_attempts,
-                     total_graded, subjects, decay=0.8, window_weeks=8):
+                     total_graded, subjects, decay=0.8, window_weeks=8, content_blocks=None):
     """subsection_rows: [{"when": datetime, "earned": float, "possible": float, "name": str}]
     activity_days: set of dates the learner did something. problem_attempts: attempts per problem.
+    content_blocks: (videos+pages done, videos+pages total, videos done, videos total) or None if unknown.
     Returns (features, subject_scores)."""
     f = {name: 0.0 for name in FEATURE_ORDER}
     today = now.date()
@@ -116,7 +119,40 @@ def compute_features(*, now, enrolled_at, subsection_rows, activity_days, proble
         f["error_retry_ratio"] = sum(1 for a in tried if a >= 2) / len(tried)
         f["avg_attempts_per_problem"] = sum(tried) / len(tried)
     f["progression_speed"] = n / n_weeks
+    if content_blocks:
+        done_all, total_all, done_video, total_video = content_blocks
+        f["content_completion"] = _clip(done_all / total_all) if total_all else 0.0
+        f["video_completion"] = _clip(done_video / total_video) if total_video else 0.0
     return f, subject_scores
+
+
+def _content_blocks(user, course_key, store):
+    """(videos+pages done, total, videos done, total) from Open edX's completion records, or None.
+    The completion app's import path differs between Open edX versions, so several are tried."""
+    import importlib
+    import logging
+
+    log = logging.getLogger(__name__)
+    BlockCompletion = None
+    for path in ("completion.models", "lms.djangoapps.completion.models"):
+        try:
+            BlockCompletion = importlib.import_module(path).BlockCompletion
+            break
+        except (ImportError, AttributeError):
+            continue
+    if BlockCompletion is None:
+        log.warning("tier_plugin: completion app not found, content completion is not used.")
+        return None
+    try:
+        videos = {(k.block_type, k.block_id) for k in (b.location for b in store.get_items(course_key, qualifiers={"category": "video"}))}
+        pages = {(k.block_type, k.block_id) for k in (b.location for b in store.get_items(course_key, qualifiers={"category": "html"}))}
+        done = {(k.block_type, k.block_id) for k in BlockCompletion.objects.filter(
+            user=user, context_key=course_key, completion__gte=1.0, block_type__in=("video", "html")
+        ).values_list("block_key", flat=True)}
+    except Exception:  # never break tiering because of this extra input
+        log.exception("tier_plugin: could not read completion records")
+        return None
+    return (len(done & (videos | pages)), len(videos | pages), len(done & videos), len(videos))
 
 
 def collect_features(user, course_key, exam):
@@ -173,6 +209,7 @@ def collect_features(user, course_key, exam):
         problem_attempts=problem_attempts,
         total_graded=total_graded,
         subjects=get_profile(exam)["subjects"],
+        content_blocks=_content_blocks(user, course_key, store),
     )
 
 

@@ -28,11 +28,11 @@ def _clip(x):
 # readiness points the learner is above or below this benchmark on that factor.
 BENCHMARK = dict(S_weighted=60.0, balance_index=0.7, subjects_covered_frac=0.5, regularity_index=0.5,
                  longest_gap_days=7.0, activity_trend_slope=0.0, completion_rate=0.5, recency_score=0.5,
-                 error_retry_ratio=0.3)
+                 error_retry_ratio=0.3, content_completion=0.5)
 
 
 def _terms(f):
-    """The readiness score is the sum of these nine terms (each 0 to a small maximum)."""
+    """The readiness score is the sum of these ten terms (each 0 to a small maximum)."""
     k = 1.0 / (W_ACADEMIC + W_CONSISTENCY + W_BEHAVIOUR)
     return {
         "S_weighted": k * W_ACADEMIC * 0.6 * f["S_weighted"] / 100,
@@ -41,7 +41,8 @@ def _terms(f):
         "regularity_index": k * W_CONSISTENCY * 0.5 * f["regularity_index"],
         "longest_gap_days": k * W_CONSISTENCY * 0.25 * (1 - min(f["longest_gap_days"] / 14.0, 1.0)),
         "activity_trend_slope": k * W_CONSISTENCY * 0.25 * _clip(0.5 + f["activity_trend_slope"] / 2.0),
-        "completion_rate": k * W_BEHAVIOUR * 0.4 * f["completion_rate"],
+        "completion_rate": k * W_BEHAVIOUR * 0.25 * f["completion_rate"],
+        "content_completion": k * W_BEHAVIOUR * 0.15 * f.get("content_completion", 0.0),  # rows stored before v0.5 lack it
         "recency_score": k * W_BEHAVIOUR * 0.3 * f["recency_score"],
         "error_retry_ratio": k * W_BEHAVIOUR * 0.3 * f["error_retry_ratio"],
     }

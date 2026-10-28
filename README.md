@@ -1,4 +1,4 @@
-# openedx-tier-plugin v0.4 (GATE CSE and UGC NET CS)
+# openedx-tier-plugin v0.5 (GATE CSE and UGC NET CS)
 
 Gives every learner a tier per course. Runs inside the LMS of an Open edX site installed with Tutor.
 Inputs come from Open edX itself (grades, attempts, activity), not from school records.
@@ -26,6 +26,7 @@ So: keep the idea (academic, consistency, behaviour), but retrain on this site's
 | sessions_count, hint_freq, tpp_deviation | not available | need event logs / authored hints |
 | urban_rural, parent_edu, sec, first_gen, district index | not collected | optional: `TIER_USE_CONTEXTUAL` sends education level and age |
 | (new) | subjects_covered_frac, longest_gap_days, avg_attempts_per_problem, days_enrolled | |
+| (new in v0.5) | content_completion, video_completion | Open edX completion records (videos and reading pages) |
 
 Activity days come from the timestamps Open edX keeps on each learner's course state. They are an approximation of real sessions.
 
@@ -60,7 +61,7 @@ Upgrading from v0.1: the same commands; migration 0002 adds two columns.
 ```
 tutor local run lms ./manage.py lms export_features --course-id course-v1:TestOrg+GATE101+gate_2026 --out /openedx/data/features.csv
 ```
-One row per learner: pseudonymous `learner_id`, the 14 inputs, `subject_scores`, and an empty `outcome` column.
+One row per learner: pseudonymous `learner_id`, the 16 inputs, `subject_scores`, and an empty `outcome` column.
 Fill `outcome` with the real result (exam result, or a mock-exam score taken later) and train on that.
 Do not use a label made from the same features.
 
@@ -75,12 +76,16 @@ POST {"schema_version": 2, "exam": "gate_cse",
 (`profile` only when `TIER_USE_CONTEXTUAL = True`) and expects `{"tier": "Tier 1", "score": 0.91, "version": "v1", "explanation": [...optional SHAP...]}`.
 Use HTTPS. Learner ids, names and emails are not sent.
 
-## What learners see (new in v0.3)
-A progress panel: average score, subjects attempted, quizzes done, active weeks, a bar per subject, and rule-based notifications
-(back after a break, weak subjects, rising or falling scores, steady routine, subjects not started) plus one next step.
-The tier is shown only when `TIER_SHOW_TO_LEARNERS = True`. The courses in this bundle embed the panel in the "Start Here > My progress and notifications" unit.
-It is also served as a page: `/api/tier/progress/` (add `?course_id=...`). The panel reads `/api/tier/v1/me/progress/` with the learner's own login.
-Notifications are computed on each visit from the stored inputs, so they are not emailed or pushed (see the bundle README for next steps).
+## What learners see
+One panel with five tiles: **CPF score**, **level (tier)**, **videos and reading done**, **study consistency**, **points to the next level**; then
+what is helping and what is holding the score back (with points and one action each), **alerts** (back after a break, weak subjects,
+falling or rising scores, lectures skipped...) and one next step. Quiz scores, grades and the course completion ring are not repeated:
+Open edX already shows them on its own Progress tab. CPF, level and the two lists need `TIER_SHOW_TO_LEARNERS = True`; the other tiles and alerts are always shown.
+The panel is one page, `/api/tier/progress/` (`?course_id=...`, add `&embed=1` to hide its heading), and it is shown in three places:
+1. **The Learning MFE Progress tab** (recommended): `tutor-plugins/tier_mfe.py` adds an iframe to the Progress tab's grade-breakdown slot.
+2. **A course unit**: the courses in this bundle have "Start Here > My progress and alerts", a tiny loader that shows the same page. It never needs re-importing when the panel changes.
+3. **Directly**, as a link.
+Alerts are computed on each visit from the stored inputs; nothing is emailed or pushed.
 
 ## CPF score and explanation (new in v0.4)
 When `TIER_SHOW_TO_LEARNERS = True` the panel also shows a CPF score (0-100), the points to the next level, and two lists:
@@ -91,8 +96,6 @@ what is helping the learner and what is holding them back, each with points and 
   `"explanation": [{"feature": "S_weighted", "impact": -0.12}, ...]` (same units as `score`, positive raises it, plugin feature names).
   Missing or malformed explanation entries are ignored; the tier still works. Add advice text for new feature names in `progress.FEATURE_INFO`.
 - Stored in `StudentTier.explanation` (migration 0003). The composite breakdown is also computed from the stored inputs when the field is empty.
-Courses embed the panel's HTML: after updating the plugin, rebuild and re-import the courses to refresh the panel inside them
-(the standalone page `/api/tier/progress/` updates by itself).
 
 ## Dummy learners
 ```
@@ -107,14 +110,15 @@ Writes `dummy_learners.csv` (username, persona, tier). The passwords are unusabl
 Dummy data tests the pipeline and the screens. It cannot tell you whether the model predicts exam results.
 
 ## API
-- `GET /api/tier/v1/me/progress/?course_id=...` the learner's own progress and notifications for ONE course (course_id required; only for learners enrolled in it).
+- `GET /api/tier/v1/me/progress/?course_id=...` the learner's own progress and alerts for ONE course (course_id required; only for learners enrolled in it).
 - `GET /api/tier/v1/me/courses/` the learner's enrolled courses that have progress (the standalone page uses it to show a course picker).
 - `GET /api/tier/v1/courses/<course_id>/` course staff: all tiers with inputs.
 - `GET /api/tier/v1/me/?course_id=...` the learner's own tier, only when `TIER_SHOW_TO_LEARNERS = True`.
 
 ## Notes
-- Tested here: feature maths (against hand-worked numbers), migrations, backends, service (39 tests, including a table that checks each dummy study pattern lands in a believable tier). Not tested inside a live Open edX: the database queries in `collect_features` and the grade signal. Check with the commands above.
+- Tested here: feature maths (against hand-worked numbers), migrations, backends, service (43 tests, including a table that checks each dummy study pattern lands in a believable tier). Not tested inside a live Open edX: the database queries in `collect_features` and the grade signal. Check with the commands above.
 - The composite backend has two guard rails found while testing with dummy learners: a weighted score under 40% is always Tier 3, and Tier 1 needs at least half the subjects attempted (`composite-v1`).
 - The panel was tested in Chromium against a mock server (light, dark, phone width; no console errors). Not tested: inside the Learning MFE, whose iframe or Content-Security-Policy settings may block the script. If the panel stays on "Loading", use the standalone page.
+- Content and video completion come from Open edX's completion records (`BlockCompletion`). Its import path differs between versions, so the plugin tries two; if neither exists the two inputs stay 0 and a warning is logged. Check with `compute_tiers` and the admin that they are not all 0.
 - A learner with no graded work gets "Not enough data", not a low tier.
 - Tiers affect real people: tell learners their activity is used, keep `TIER_SHOW_TO_LEARNERS` off until results are checked, and review results by group before acting on them.

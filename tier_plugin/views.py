@@ -34,7 +34,7 @@ class MyTierView(APIView):
 
 
 class MyProgressView(APIView):
-    """GET /api/tier/v1/me/progress/?course_id=...  -> the learner's own progress and notifications.
+    """GET /api/tier/v1/me/progress/?course_id=...  -> the learner's own progress and alerts.
     The tier is included only when TIER_SHOW_TO_LEARNERS is True."""
 
     authentication_classes = (JwtAuthentication, SessionAuthentication)

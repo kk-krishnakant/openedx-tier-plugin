@@ -63,16 +63,16 @@ class ProgressTest(TestCase):
         self.assertEqual(d["overall"]["subjects_attempted"], 3)
         self.assertEqual(sum(1 for s in d["subjects"] if s["status"] == "not_started"), 11)
         self.assertTrue(d["next_step"].startswith("Start the"))
-        self.assertIn("Not started yet", [n["title"] for n in d["notifications"]])
+        self.assertIn("Not started yet", [n["title"] for n in d["alerts"]])
 
     def test_struggling_gets_warning_first(self):
         d = self.prog("struggling")
-        self.assertEqual(d["notifications"][0]["level"], "warn")
-        self.assertIn("Needs more practice", [n["title"] for n in d["notifications"]])
+        self.assertEqual(d["alerts"][0]["level"], "warn")
+        self.assertIn("Needs more practice", [n["title"] for n in d["alerts"]])
 
     def test_new_joiner_gets_start_message(self):
         d = self.prog("new_joiner")
-        self.assertEqual(d["notifications"][0]["title"], "Start your first practice quiz")
+        self.assertEqual(d["alerts"][0]["title"], "Start your first practice quiz")
         self.assertIsNone(d["overall"]["average_score"])
 
     def test_inactive_learner_is_told(self):
@@ -80,7 +80,20 @@ class ProgressTest(TestCase):
         f.update(S_weighted=60.0, recency_score=0.2, regularity_index=0.5)  # ~23 days idle
         d = progress.build_progress(exam="ugc_net_cs", features=f, subject_scores={"Software Engineering": 60.0})
         self.assertEqual(d["overall"]["days_since_active"], 23)
-        self.assertEqual(d["notifications"][0]["title"], "Time to get back")
+        self.assertEqual(d["alerts"][0]["title"], "Time to get back")
+
+    def test_content_and_consistency_panels_always_present(self):
+        d = self.prog("steady_topper")  # tier hidden, these two are still shown
+        self.assertGreater(d["content"]["content_pct"], 50)
+        self.assertGreaterEqual(d["content"]["video_pct"], 0)
+        self.assertEqual(d["consistency"]["active_weeks_pct"], d["overall"]["active_weeks_pct"])
+        self.assertEqual(d["notifications"], d["alerts"])  # old key kept for panels imported before v0.5
+
+    def test_skipping_lectures_alert(self):
+        f = {k: 0.0 for k in features.FEATURE_ORDER}
+        f.update(S_weighted=70.0, completion_rate=0.6, content_completion=0.1, recency_score=1.0, regularity_index=1.0)
+        d = progress.build_progress(exam="gate_cse", features=f, subject_scores={"Algorithms": 70.0})
+        self.assertIn("Do not skip the lectures", [n["title"] for n in d["alerts"]])
 
     def test_tier_hidden_unless_allowed(self):
         self.assertIsNone(self.prog("steady_topper")["tier"])
@@ -217,6 +230,15 @@ class EnrollmentGateTest(TestCase):
 
 @override_settings(LOGIN_URL="/login/")
 class PageTest(TestCase):
+    def test_loader_and_panel_texts(self):
+        from tier_plugin import widget
+        self.assertIn("/api/tier/progress/?embed=1", widget.LOADER_HTML)
+        self.assertIn("tierPanelHeight", widget.LOADER_HTML)
+        self.assertIn("Alerts", widget.PANEL_HTML)
+        self.assertNotIn("Notifications", widget.PANEL_HTML)
+        for gone in ("Average quiz score", "Graded quizzes done", "Subjects attempted"):
+            self.assertNotIn(gone, widget.PANEL_HTML)  # Open edX already shows quiz results
+
     def test_page_needs_login_and_serves_widget(self):
         rf = RequestFactory()
         req = rf.get("/api/tier/progress/")
@@ -226,4 +248,5 @@ class PageTest(TestCase):
         req.user = get_user_model().objects.create(username="u")
         resp = pages.progress_page(req)
         self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.xframe_options_exempt)  # shown inside the Progress tab iframe
         self.assertIn(b"/api/tier/v1/me/", resp.content)

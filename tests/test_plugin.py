@@ -64,6 +64,18 @@ class FeatureMathTest(TestCase):
         self.assertAlmostEqual(self.f["progression_speed"], 1.0)
         self.assertEqual(self.f["days_enrolled"], 21.0)
 
+    def test_content_completion(self):
+        # 12 of 30 videos+pages done, 5 of 10 videos done
+        f, _ = features.compute_features(
+            now=NOW, enrolled_at=day(21), subsection_rows=[], activity_days=set(), problem_attempts=[],
+            total_graded=4, subjects=["Algebra"], content_blocks=(12, 30, 5, 10))
+        self.assertAlmostEqual(f["content_completion"], 0.4)
+        self.assertAlmostEqual(f["video_completion"], 0.5)
+        f, _ = features.compute_features(
+            now=NOW, enrolled_at=day(21), subsection_rows=[], activity_days=set(), problem_attempts=[],
+            total_graded=4, subjects=["Algebra"], content_blocks=None)
+        self.assertEqual((f["content_completion"], f["video_completion"]), (0.0, 0.0))
+
     def test_all_features_present_and_numeric(self):
         self.assertEqual(set(self.f), set(features.FEATURE_ORDER))
         self.assertTrue(all(isinstance(v, float) for v in self.f.values()))
@@ -102,7 +114,9 @@ class CompositeTest(TestCase):
         f, _ = TestFeature.f_and_s()
         pred = model_adapter.CompositeBackend().predict(f)
         self.assertEqual(pred.tier, "Tier 1")
-        self.assertAlmostEqual(pred.score, 0.7994, places=3)
+        # v0.5: quiz completion weighs 0.25 (was 0.4) and content completion (0 here) takes 0.15:
+        # 0.7994 + (1/0.85)*0.20*(0.25-0.40)*0.75 = 0.7994 - 0.0265 = 0.7729
+        self.assertAlmostEqual(pred.score, 0.7729, places=3)
 
 
 class TestFeature:
